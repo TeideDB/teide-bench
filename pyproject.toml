@@ -1,0 +1,13 @@
+[project]
+name = "teide-bench"
+version = "0.1.0"
+description = "Benchmarks for the Teide columnar dataframe engine"
+requires-python = ">=3.9"
+dependencies = [
+    "teide",
+    "duckdb",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
