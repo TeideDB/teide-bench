@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.join(_here, "bindings", "python"))
 from teide import TeideLib, OP_SUM, OP_AVG, OP_MIN, OP_MAX, OP_COUNT
 
 CSV_PATH = os.path.abspath(os.path.join(
-    _here, "..", "rayforce-bench", "datasets",
+    _here, "..", "datasets",
     "G1_1e7_1e2_0_0", "G1_1e7_1e2_0_0.csv"))
 
 # --------------------------------------------------------------------------

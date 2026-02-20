@@ -36,7 +36,7 @@ from teide import TeideLib, OP_SUM, OP_AVG, OP_MIN, OP_MAX, OP_COUNT
 N_ITER = 7  # median of 7 runs
 
 CSV_PATH = os.path.join(os.path.dirname(__file__),
-                        "..", "rayforce-bench", "datasets",
+                        "..", "datasets",
                         "G1_1e7_1e2_0_0", "G1_1e7_1e2_0_0.csv")
 
 

@@ -35,7 +35,7 @@ from teide import TeideLib
 N_ITER = 7
 
 CSV_PATH = os.path.join(os.path.dirname(__file__),
-                        "..", "rayforce-bench", "datasets",
+                        "..", "datasets",
                         "G1_1e7_1e2_0_0", "G1_1e7_1e2_0_0.csv")
 
 

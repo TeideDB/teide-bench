@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "py"))
 from teide import TeideLib
 
 CSV_PATH = os.path.join(os.path.dirname(__file__),
-                        "..", "..", "rayforce-bench", "datasets",
+                        "..", "datasets",
                         "G1_1e7_1e2_0_0", "G1_1e7_1e2_0_0.csv")
 
 TABLE_NAME = "quotes"

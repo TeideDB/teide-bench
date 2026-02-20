@@ -32,7 +32,7 @@ import time
 import os
 
 JOIN_DIR = os.path.join(os.path.dirname(__file__),
-                        "..", "rayforce-bench", "datasets", "h2oai_join_1e7")
+                        "..", "..", "datasets", "h2oai_join_1e7")
 X_CSV = os.path.join(JOIN_DIR, "J1_1e7_NA_0_0.csv")
 Y_CSV = os.path.join(JOIN_DIR, "J1_1e7_1e7_0_0.csv")
 

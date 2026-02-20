@@ -28,7 +28,7 @@ import time
 import os
 
 CSV_PATH = os.path.join(os.path.dirname(__file__),
-                        "..", "rayforce-bench", "datasets",
+                        "..", "..", "datasets",
                         "G1_1e7_1e2_0_0", "G1_1e7_1e2_0_0.csv")
 
 N_ITER = 7  # median of 7 runs
@@ -90,7 +90,7 @@ def run_section(con, title, queries):
 
 def main():
     base = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                        "..", "rayforce-bench", "datasets"))
+                                        "..", "..", "datasets"))
     csv_groupby = os.path.join(base, "G1_1e7_1e2_0_0", "G1_1e7_1e2_0_0.csv")
     csv_big = os.path.join(base, "h2oai_join_1e7", "J1_1e7_NA_0_0.csv")
     csv_small = os.path.join(base, "h2oai_join_1e7", "J1_1e7_1e7_0_0.csv")

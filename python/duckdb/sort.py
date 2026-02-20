@@ -33,7 +33,7 @@ import time
 import os
 
 CSV_PATH = os.path.join(os.path.dirname(__file__),
-                        "..", "rayforce-bench", "datasets",
+                        "..", "..", "datasets",
                         "G1_1e7_1e2_0_0", "G1_1e7_1e2_0_0.csv")
 
 N_ITER = 7
