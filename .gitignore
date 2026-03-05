@@ -6,3 +6,5 @@ dist/
 *.swp
 datasets/
 results.json
+.venv/
+.deps/
