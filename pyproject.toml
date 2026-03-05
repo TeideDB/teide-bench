@@ -7,10 +7,3 @@ dependencies = [
     "duckdb",
     "polars",
 ]
-
-[project.optional-dependencies]
-teide = ["teide"]
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"

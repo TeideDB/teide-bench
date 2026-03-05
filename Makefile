@@ -5,6 +5,7 @@ PYTHON := $(VENV)/bin/python
 ROWS ?= 1e7
 ENGINES ?= duckdb,polars,teide
 TEIDE_PY_REPO := https://github.com/TeideDB/teide-py.git
+TEIDE_REPO := https://github.com/TeideDB/teide.git
 
 .PHONY: setup data bench clean
 
@@ -13,11 +14,12 @@ $(VENV)/bin/activate:
 
 setup: $(VENV)/bin/activate
 	$(PIP) install -q --upgrade pip
-	$(PIP) install -q -e .
+	$(PIP) install -q duckdb polars
 	@# Try PyPI first, fall back to source build
 	@$(PIP) install -q teide 2>/dev/null \
 		|| ( echo "teide not on PyPI, building from source..." \
 			&& ( [ -d .deps/teide-py ] || git clone --depth 1 $(TEIDE_PY_REPO) .deps/teide-py ) \
+			&& ( [ -d .deps/teide-py/vendor/teide ] || git clone --depth 1 $(TEIDE_REPO) .deps/teide-py/vendor/teide ) \
 			&& $(PIP) install -q .deps/teide-py )
 	@echo "Setup complete."
 
