@@ -1,12 +1,15 @@
 [project]
 name = "teide-bench"
 version = "0.1.0"
-description = "Benchmarks for the Teide columnar dataframe engine"
+description = "H2O.ai benchmark: Teide vs DuckDB vs Polars"
 requires-python = ">=3.9"
 dependencies = [
-    "teide",
     "duckdb",
+    "polars",
 ]
+
+[project.optional-dependencies]
+teide = ["teide"]
 
 [build-system]
 requires = ["hatchling"]
