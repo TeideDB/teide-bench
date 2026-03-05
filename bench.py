@@ -7,26 +7,15 @@ import os
 import platform
 import time
 
+# Reuse path helpers from the generator
+from gen.generate import n_label, dataset_prefix, join_dir_name
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASETS = os.path.join(SCRIPT_DIR, "datasets")
 
 N_ITER = 7
 N_ITER_JOIN = 5
 N_WARMUP = 3
-
-
-def parse_sci(s):
-    s = s.lower().strip()
-    if s.startswith("1e"):
-        return int(10 ** int(s[2:]))
-    return int(float(s))
-
-
-def n_label(n):
-    for exp in range(9, 0, -1):
-        if n >= 10**exp:
-            return f"1e{exp}"
-    return str(n)
 
 
 def median(lst):
@@ -42,20 +31,21 @@ def fmt(ms):
     return f"{ms/1000:.2f}s"
 
 
-def csv_paths(n):
+def csv_paths(n, k, seed):
+    prefix = dataset_prefix(n, k, seed)
     ns = n_label(n)
-    ks = "1e2"
-    gb = os.path.join(DATASETS, f"G1_{ns}_{ks}_0_0", f"G1_{ns}_{ks}_0_0.csv")
-    jx = os.path.join(DATASETS, f"J1_{ns}", f"J1_{ns}_NA_0_0.csv")
-    jy = os.path.join(DATASETS, f"J1_{ns}", f"J1_{ns}_{ns}_0_0.csv")
+    jd = join_dir_name(n)
+    gb = os.path.join(DATASETS, prefix, f"{prefix}.csv")
+    jx = os.path.join(DATASETS, jd, f"J1_{ns}_NA_0_0.csv")
+    jy = os.path.join(DATASETS, jd, f"J1_{ns}_{ns}_0_0.csv")
     return gb, jx, jy
 
 
 # ── DuckDB ──
 
-def bench_duckdb(n):
+def bench_duckdb(n, k, seed):
     import duckdb
-    gb, jx, jy = csv_paths(n)
+    gb, jx, jy = csv_paths(n, k, seed)
 
     con = duckdb.connect()
     con.execute("RESET threads")
@@ -98,10 +88,10 @@ def bench_duckdb(n):
         "SELECT * FROM df ORDER BY id1, id2, id3")
 
     con.execute(f"CREATE TABLE x AS SELECT * FROM read_csv_auto('{jx}')")
-    con.execute(f"CREATE TABLE small AS SELECT * FROM read_csv_auto('{jy}')")
+    con.execute(f"CREATE TABLE y AS SELECT * FROM read_csv_auto('{jy}')")
     res["j1"] = run("join j1 - inner, 3-key",
-        "SELECT x.id1,x.id2,x.id3,x.v1,small.v2 FROM x "
-        "INNER JOIN small ON x.id1=small.id1 AND x.id2=small.id2 AND x.id3=small.id3",
+        "SELECT x.id1,x.id2,x.id3,x.v1,y.v2 FROM x "
+        "INNER JOIN y ON x.id1=y.id1 AND x.id2=y.id2 AND x.id3=y.id3",
         n_iter=N_ITER_JOIN)
 
     con.close()
@@ -110,11 +100,12 @@ def bench_duckdb(n):
 
 # ── Polars ──
 
-def bench_polars(n):
+def bench_polars(n, k, seed):
     import polars as pl
-    gb, jx, jy = csv_paths(n)
+    gb, jx, jy = csv_paths(n, k, seed)
 
-    print(f"\n=== Polars {pl.__version__} ===")
+    nthreads = pl.thread_pool_size()
+    print(f"\n=== Polars {pl.__version__} ({nthreads} threads) ===")
 
     df = pl.read_csv(gb)
     print(f"  {df.height:,} rows loaded")
@@ -154,16 +145,18 @@ def bench_polars(n):
         lambda: x.join(y, on=["id1", "id2", "id3"], how="inner"),
         n_iter=N_ITER_JOIN)
 
-    return {"results": res, "version": pl.__version__}
+    return {"results": res, "version": pl.__version__, "threads": nthreads}
 
 
 # ── Teide ──
 
-def bench_teide(n):
+def bench_teide(n, k, seed):
+    import teide
     from teide.api import Context, col
-    gb, jx, jy = csv_paths(n)
+    gb, jx, jy = csv_paths(n, k, seed)
 
-    print(f"\n=== Teide ===")
+    version = getattr(teide, "__version__", "dev")
+    print(f"\n=== Teide {version} ===")
 
     with Context() as ctx:
         df = ctx.read_csv(gb)
@@ -210,7 +203,7 @@ def bench_teide(n):
 
         res["j1"] = run("join j1 - inner, 3-key", join_fn, n_iter=N_ITER_JOIN)
 
-    return {"results": res}
+    return {"results": res, "version": version}
 
 
 # ── Main ──
@@ -232,28 +225,36 @@ QUERIES = [
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="H2O.ai benchmark: Teide vs DuckDB vs Polars")
     ap.add_argument("--rows", "-n", default="1e7", help="Row count (default: 1e7)")
+    ap.add_argument("--k", "-K", type=int, default=100, help="Group cardinality (default: 100)")
+    ap.add_argument("--seed", "-s", type=int, default=0, help="Dataset seed (default: 0)")
     ap.add_argument("--engines", "-e", default="duckdb,polars,teide",
                     help="Comma-separated engines (default: duckdb,polars,teide)")
     args = ap.parse_args()
 
+    from gen.generate import parse_sci
     n = parse_sci(args.rows)
+    k = args.k
+    seed = args.seed
     engines = [e.strip() for e in args.engines.split(",")]
 
     # Check datasets exist
-    gb, jx, jy = csv_paths(n)
+    gb, jx, jy = csv_paths(n, k, seed)
     for p in [gb, jx, jy]:
         if not os.path.exists(p):
             print(f"Dataset not found: {p}")
-            print(f"Run: python gen/generate.py --rows {args.rows}")
+            print(f"Run: python gen/generate.py --rows {args.rows} --k {k} --seed {seed}")
             exit(1)
 
-    all_results = {"rows": n, "cpu": platform.processor(), "os": platform.platform()}
+    all_results = {
+        "rows": n, "k": k, "seed": seed,
+        "cpu": platform.processor(), "os": platform.platform(),
+    }
 
     for name in engines:
         if name not in ENGINES:
             print(f"Unknown engine: {name}")
             continue
-        data = ENGINES[name](n)
+        data = ENGINES[name](n, k, seed)
         all_results[name] = data
 
     # Summary

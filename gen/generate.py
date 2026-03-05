@@ -3,7 +3,6 @@
 
 import csv
 import random
-import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -18,10 +17,19 @@ def parse_sci(s: str) -> int:
 
 
 def n_label(n: int) -> str:
-    for exp in range(9, 0, -1):
-        if n >= 10**exp:
-            return f"1e{exp}"
+    """Convert row count to H2O.ai label. Only exact powers of 10 get short form."""
+    import math
+    if n >= 10 and n == 10 ** int(math.log10(n)):
+        return f"1e{int(math.log10(n))}"
     return str(n)
+
+
+def dataset_prefix(n: int, k: int, seed: int) -> str:
+    return f"G1_{n_label(n)}_{n_label(k)}_0_{seed}"
+
+
+def join_dir_name(n: int) -> str:
+    return f"J1_{n_label(n)}"
 
 
 def generate_groupby(output_dir: Path, n: int, k: int, seed: int):
@@ -32,8 +40,7 @@ def generate_groupby(output_dir: Path, n: int, k: int, seed: int):
     id2_vals = [f"id{i:03d}" for i in range(1, k + 1)]
     id3_vals = [f"id{i:09d}" for i in range(1, n_high + 1)]
 
-    n_str, k_str = n_label(n), n_label(k)
-    name = f"G1_{n_str}_{k_str}_0_{seed}"
+    name = dataset_prefix(n, k, seed)
     d = output_dir / name
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{name}.csv"
@@ -62,13 +69,13 @@ def generate_groupby(output_dir: Path, n: int, k: int, seed: int):
 
 def generate_join(output_dir: Path, n: int, k: int, seed: int):
     n_high = max(n // k, k)
-    n_str = n_label(n)
-    d = output_dir / f"J1_{n_str}"
+    ns = n_label(n)
+    d = output_dir / join_dir_name(n)
     d.mkdir(parents=True, exist_ok=True)
 
     for label, fname, vcol, s in [
-        ("x", f"J1_{n_str}_NA_0_0.csv", "v1", seed),
-        ("y", f"J1_{n_str}_{n_str}_0_0.csv", "v2", seed + 1),
+        ("x", f"J1_{ns}_NA_0_0.csv", "v1", seed),
+        ("y", f"J1_{ns}_{ns}_0_0.csv", "v2", seed + 1),
     ]:
         random.seed(s)
         path = d / fname
@@ -97,14 +104,14 @@ if __name__ == "__main__":
     p.add_argument("--rows", "-n", default="1e7", help="Row count (default: 1e7)")
     p.add_argument("--type", "-t", choices=["groupby", "join", "all"], default="all")
     p.add_argument("--seed", "-s", type=int, default=0)
+    p.add_argument("--k", "-K", type=int, default=100, help="Group cardinality (default: 100)")
     p.add_argument("--output", "-o", type=Path, default=None)
     args = p.parse_args()
 
     n = parse_sci(args.rows)
-    k = 100
     out = args.output or DATASETS
 
     if args.type in ("groupby", "all"):
-        generate_groupby(out, n, k, args.seed)
+        generate_groupby(out, n, args.k, args.seed)
     if args.type in ("join", "all"):
-        generate_join(out, n, k, args.seed)
+        generate_join(out, n, args.k, args.seed)

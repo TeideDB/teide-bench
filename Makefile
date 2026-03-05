@@ -3,6 +3,8 @@ VENV := .venv
 PIP := $(VENV)/bin/pip
 PYTHON := $(VENV)/bin/python
 ROWS ?= 1e7
+K ?= 100
+SEED ?= 0
 ENGINES ?= duckdb,polars,teide
 TEIDE_PY_REPO := https://github.com/TeideDB/teide-py.git
 TEIDE_REPO := https://github.com/TeideDB/teide.git
@@ -24,10 +26,15 @@ setup: $(VENV)/bin/activate
 	@echo "Setup complete."
 
 data: setup
-	@$(PYTHON) gen/generate.py --rows $(ROWS)
+	@$(PYTHON) -c "from gen.generate import parse_sci, dataset_prefix, join_dir_name, n_label; \
+		import os; n=parse_sci('$(ROWS)'); k=$(K); s=$(SEED); \
+		gb=os.path.join('datasets', dataset_prefix(n,k,s), dataset_prefix(n,k,s)+'.csv'); \
+		ns=n_label(n); jx=os.path.join('datasets', join_dir_name(n), f'J1_{ns}_NA_0_0.csv'); \
+		exit(0 if os.path.exists(gb) and os.path.exists(jx) else 1)" 2>/dev/null \
+		|| $(PYTHON) gen/generate.py --rows $(ROWS) --k $(K) --seed $(SEED)
 
 bench: data
-	$(PYTHON) bench.py --rows $(ROWS) --engines $(ENGINES)
+	$(PYTHON) bench.py --rows $(ROWS) --k $(K) --seed $(SEED) --engines $(ENGINES)
 
 clean:
 	rm -rf $(VENV) .deps datasets results.json
