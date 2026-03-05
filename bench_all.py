@@ -171,7 +171,10 @@ def bench_polars():
 
 def bench_teide():
     sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "teide-py"))
-    os.environ["TEIDE_LIB"] = os.path.join(SCRIPT_DIR, "..", "teide", "build", "libteide.so")
+    import platform
+    lib_ext = "dylib" if platform.system() == "Darwin" else "so"
+    lib_dir = "build_release" if os.path.isdir(os.path.join(SCRIPT_DIR, "..", "teide", "build_release")) else "build"
+    os.environ["TEIDE_LIB"] = os.path.join(SCRIPT_DIR, "..", "teide", lib_dir, f"libteide.{lib_ext}")
 
     from teide import TeideLib, OP_SUM, OP_AVG, OP_COUNT
     import ctypes
