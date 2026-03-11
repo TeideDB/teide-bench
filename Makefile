@@ -16,13 +16,17 @@ $(VENV)/bin/activate:
 
 setup: $(VENV)/bin/activate
 	$(PIP) install -q --upgrade pip
-	$(PIP) install -q duckdb polars glaredb
-	@# Try PyPI first, fall back to source build
-	@$(PIP) install -q teide 2>/dev/null \
-		|| ( echo "teide not on PyPI, building from source..." \
-			&& ( [ -d .deps/teide-py ] || git clone --depth 1 $(TEIDE_PY_REPO) .deps/teide-py ) \
-			&& ( [ -d .deps/teide-py/vendor/teide ] || git clone --depth 1 $(TEIDE_REPO) .deps/teide-py/vendor/teide ) \
-			&& $(PIP) install -q .deps/teide-py )
+	$(PIP) install -q duckdb polars glaredb rayforce-py
+	@# Always build teide from latest git source
+	@( [ -d .deps/teide-py ] \
+		&& git -C .deps/teide-py fetch -q origin \
+		&& git -C .deps/teide-py reset -q --hard origin/master \
+		|| git clone --depth 1 $(TEIDE_PY_REPO) .deps/teide-py )
+	@( [ -d .deps/teide-py/vendor/teide ] \
+		&& git -C .deps/teide-py/vendor/teide fetch -q origin \
+		&& git -C .deps/teide-py/vendor/teide reset -q --hard origin/master \
+		|| git clone --depth 1 $(TEIDE_REPO) .deps/teide-py/vendor/teide )
+	$(PIP) install -q --no-cache-dir --force-reinstall .deps/teide-py
 	@echo "Setup complete."
 
 data: setup
