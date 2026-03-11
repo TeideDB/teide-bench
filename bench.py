@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""H2O.ai benchmark: Teide vs DuckDB vs Polars."""
+"""H2O.ai benchmark: Teide vs DuckDB vs Polars vs GlareDB."""
 
 import argparse
 import json
@@ -148,6 +148,66 @@ def bench_polars(n, k, seed):
     return {"results": res, "version": pl.__version__, "threads": nthreads}
 
 
+# ── GlareDB ──
+
+def bench_glaredb(n, k, seed):
+    import glaredb
+    gb, jx, jy = csv_paths(n, k, seed)
+
+    con = glaredb.connect()
+    version = "25.6.3"
+    print(f"\n=== GlareDB {version} ===")
+
+    con.sql(f"CREATE TEMP TABLE df AS SELECT * FROM read_csv('{gb}')")
+    nrows_r = con.sql("SELECT COUNT(*) AS cnt FROM df")
+    # GlareDB show() prints; parse count from a fresh query
+    con.sql("SELECT 1")  # dummy
+    print(f"  {n:,} rows loaded")
+
+    def run(label, sql, n_iter=N_ITER):
+        for _ in range(N_WARMUP):
+            con.sql("DROP TABLE IF EXISTS _r")
+            con.sql(f"CREATE TEMP TABLE _r AS {sql}")
+        times = []
+        for _ in range(n_iter):
+            con.sql("DROP TABLE IF EXISTS _r")
+            t0 = time.perf_counter()
+            con.sql(f"CREATE TEMP TABLE _r AS {sql}")
+            times.append((time.perf_counter() - t0) * 1000)
+        con.sql("DROP TABLE IF EXISTS _r")
+        ms = median(times)
+        print(f"  {label:30s} {fmt(ms):>10s}")
+        return ms
+
+    res = {}
+    res["q1"] = run("q1 - id1, SUM v1",
+        "SELECT id1, SUM(v1) AS v1 FROM df GROUP BY id1")
+    res["q2"] = run("q2 - id1+id2, SUM v1",
+        "SELECT id1, id2, SUM(v1) AS v1 FROM df GROUP BY id1, id2")
+    res["q3"] = run("q3 - id3, SUM+AVG",
+        "SELECT id3, SUM(v1) AS v1, AVG(v3) AS v3 FROM df GROUP BY id3")
+    res["q5"] = run("q5 - id6, 3xSUM",
+        "SELECT id6, SUM(v1) AS v1, SUM(v2) AS v2, SUM(v3) AS v3 FROM df GROUP BY id6")
+    res["q7"] = run("q7 - 6-key, SUM+COUNT",
+        "SELECT id1,id2,id3,id4,id5,id6, SUM(v3) AS v3, COUNT(*) AS cnt "
+        "FROM df GROUP BY id1,id2,id3,id4,id5,id6")
+
+    res["s1"] = run("sort s1 - id1 ASC",
+        "SELECT * FROM df ORDER BY id1")
+    res["s6"] = run("sort s6 - 3-key ASC",
+        "SELECT * FROM df ORDER BY id1, id2, id3")
+
+    con.sql(f"CREATE TEMP TABLE x AS SELECT * FROM read_csv('{jx}')")
+    con.sql(f"CREATE TEMP TABLE y AS SELECT * FROM read_csv('{jy}')")
+    res["j1"] = run("join j1 - inner, 3-key",
+        "SELECT x.id1,x.id2,x.id3,x.v1,y.v2 FROM x "
+        "INNER JOIN y ON x.id1=y.id1 AND x.id2=y.id2 AND x.id3=y.id3",
+        n_iter=N_ITER_JOIN)
+
+    con.close()
+    return {"results": res, "version": version}
+
+
 # ── Teide ──
 
 def bench_teide(n, k, seed):
@@ -208,7 +268,7 @@ def bench_teide(n, k, seed):
 
 # ── Main ──
 
-ENGINES = {"duckdb": bench_duckdb, "polars": bench_polars, "teide": bench_teide}
+ENGINES = {"duckdb": bench_duckdb, "polars": bench_polars, "glaredb": bench_glaredb, "teide": bench_teide}
 
 QUERIES = [
     ("q1 - id1, SUM v1", "q1"),
@@ -227,8 +287,8 @@ if __name__ == "__main__":
     ap.add_argument("--rows", "-n", default="1e7", help="Row count (default: 1e7)")
     ap.add_argument("--k", "-K", type=int, default=100, help="Group cardinality (default: 100)")
     ap.add_argument("--seed", "-s", type=int, default=0, help="Dataset seed (default: 0)")
-    ap.add_argument("--engines", "-e", default="duckdb,polars,teide",
-                    help="Comma-separated engines (default: duckdb,polars,teide)")
+    ap.add_argument("--engines", "-e", default="duckdb,polars,glaredb,teide",
+                    help="Comma-separated engines (default: duckdb,polars,glaredb,teide)")
     args = ap.parse_args()
 
     from gen.generate import parse_sci

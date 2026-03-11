@@ -5,7 +5,7 @@ PYTHON := $(VENV)/bin/python
 ROWS ?= 1e7
 K ?= 100
 SEED ?= 0
-ENGINES ?= duckdb,polars,teide
+ENGINES ?= duckdb,polars,glaredb,teide
 TEIDE_PY_REPO := https://github.com/TeideDB/teide-py.git
 TEIDE_REPO := https://github.com/TeideDB/teide.git
 
@@ -16,7 +16,7 @@ $(VENV)/bin/activate:
 
 setup: $(VENV)/bin/activate
 	$(PIP) install -q --upgrade pip
-	$(PIP) install -q duckdb polars
+	$(PIP) install -q duckdb polars glaredb
 	@# Try PyPI first, fall back to source build
 	@$(PIP) install -q teide 2>/dev/null \
 		|| ( echo "teide not on PyPI, building from source..." \
