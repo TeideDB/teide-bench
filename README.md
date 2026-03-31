@@ -1,6 +1,6 @@
 # Teide Benchmarks
 
-H2O.ai db-benchmark: [Teide](https://github.com/TeideDB/teide) vs DuckDB vs Polars.
+H2O.ai db-benchmark: [Teide](https://github.com/TeideDB/teide) vs DuckDB vs Polars vs GlareDB vs [RayForce](https://github.com/RayforceDB/rayforce).
 
 ## Quick Start
 
@@ -11,9 +11,10 @@ make bench
 ```
 
 This will:
-1. Create a Python venv and install DuckDB, Polars, and Teide
+1. Create a Python venv and install DuckDB, Polars, GlareDB, Teide, and RayForce
 2. Generate 10M-row H2O.ai datasets
 3. Run all benchmarks and print a comparison table
+4. Generate an interactive histogram (`results/bench.html`)
 
 ## Custom Size
 
@@ -27,31 +28,94 @@ make bench ROWS=1e8
 make bench ENGINES=teide,duckdb
 ```
 
-## Prerequisites
+## Build from Custom Source
 
-- Python 3.9+
-- C compiler + CMake (only if `teide` is not yet on PyPI)
+Test a local development branch of RayForce or Teide:
 
-## Methodology
+```bash
+# RayForce from local directory
+.venv/bin/python bench.py --engines teide,rayforce --rayforce-dir /path/to/rayforce
 
-- Dataset: H2O.ai db-benchmark format (groupby, sort, join)
-- Warmup: 3 iterations, Timed: 7 iterations (5 for joins), Report: median
-- All engines use default thread counts (all available cores)
+# RayForce from git branch (clones from GitHub)
+.venv/bin/python bench.py --engines teide,rayforce --rayforce-branch feature/new-sort
+
+# Teide from local directory
+.venv/bin/python bench.py --engines teide,duckdb --teide-dir /path/to/teide
+
+# Teide from git branch
+.venv/bin/python bench.py --engines teide,duckdb --teide-branch feature/new-join
+```
+
+The engine label in results includes branch and commit, e.g. `rayforce@serhii/sort (0d88dc46)`.
+Run the benchmark twice with different branches — results merge automatically for comparison.
+
+## Sort Benchmark
+
+Comprehensive single-column sort benchmark across data patterns, types, and vector sizes.
+
+### Generate Data
+
+```bash
+.venv/bin/python gen/gen_sort.py --max-length 10000000
+```
+
+### Run Sort Benchmark
+
+```bash
+# All engines
+.venv/bin/python sort_bench_multi.py --max-length 10000000
+
+# Specific engines
+.venv/bin/python sort_bench_multi.py --engines duckdb,teide --max-length 1000000
+
+# With custom RayForce build
+.venv/bin/python sort_bench_multi.py --engines rayforce --rayforce-dir /path/to/rayforce --max-length 10000000
+
+# Specific patterns/types
+.venv/bin/python sort_bench_multi.py --engines duckdb --patterns random,nearly_sorted --types i64,f64
+```
+
+### Generate Plots
+
+```bash
+.venv/bin/python sort_bench_plot.py
+```
+
+### Sort Benchmark Parameters
+
+**Data patterns:** random, few_unique, nearly_sorted, rev_nearly_sorted
+
+**Data types:** u8, i16, i32, i64, f64, sym, str8, str16
+
+**Vector lengths:** 1 to 100M with intermediate points (1,2,3,...,9,10,20,...,90,100,...)
 
 ## Results
 
-*Apple M3 Pro, 14 cores, 36 GB RAM, macOS 15.4*
+All output goes to `results/`:
 
-| Query | Teide | DuckDB | Polars |
-|-------|------:|-------:|-------:|
-| q1 - id1, SUM v1 | 5.5ms | 8.4ms | 9.8ms |
-| q2 - id1+id2, SUM v1 | 5.7ms | 15.9ms | 109.7ms |
-| q3 - id3, SUM+AVG | 7.4ms | 59.8ms | 112.5ms |
-| q5 - id6, 3xSUM | 12.3ms | 42.4ms | 93.5ms |
-| q7 - 6-key, SUM+COUNT | 63.4ms | 189.1ms | 640.3ms |
-| sort s1 - id1 ASC | 108.1ms | 174.9ms | 324.8ms |
-| sort s6 - 3-key ASC | 136.0ms | 498.1ms | 874.6ms |
-| join j1 - inner, 3-key | 36.5ms | 52.5ms | 216.5ms |
+| File | Description |
+|------|-------------|
+| `results/bench_results.json` | H2O benchmark raw data |
+| `results/bench.html` | H2O interactive histogram |
+| `results/sort_results.json` | Sort benchmark raw data |
+| `results/sort_bench.html` | Sort interactive chart (log-log, filterable) |
+| `results/sort_data_viz.html` | Input data pattern visualization |
+
+Results are merged across runs — run a new engine or source directory without losing previous measurements.
+
+## Methodology
+
+- **H2O benchmark:** groupby (q1-q7), sort (s1, s6), join (j1), read_csv (s8, s16)
+- **Each operation runs in a separate subprocess** — memory freed between measurements, no swap interference
+- **Warmup:** 3 iterations (groupby/sort/join), 1 (csv)
+- **Timed:** 7 iterations (groupby/sort), 5 (join), 3 (csv)
+- **Report:** median
+
+## Prerequisites
+
+- Python 3.9+
+- C compiler (clang or gcc)
+- make
 
 ## License
 

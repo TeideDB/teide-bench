@@ -380,23 +380,22 @@ def bench_teide(n, k, seed):
 
     res = {}
 
-    # Context 1: groupby + sort + join — closed before CSV load
+    def run(label, fn, n_iter=N_ITER):
+        for _ in range(N_WARMUP):
+            fn()
+        times = []
+        for _ in range(n_iter):
+            t0 = time.perf_counter()
+            fn()
+            times.append((time.perf_counter() - t0) * 1000)
+        ms = median(times)
+        print(f"  {label:30s} {fmt(ms):>10s}")
+        return ms
+
+    # Groupby — one context, results are small
     with Context() as ctx:
         df = ctx.read_csv(gb)
-        nrows = len(df)
-        print(f"  {nrows:,} rows loaded")
-
-        def run(label, fn, n_iter=N_ITER):
-            for _ in range(N_WARMUP):
-                fn()
-            times = []
-            for _ in range(n_iter):
-                t0 = time.perf_counter()
-                fn()
-                times.append((time.perf_counter() - t0) * 1000)
-            ms = median(times)
-            print(f"  {label:30s} {fmt(ms):>10s}")
-            return ms
+        print(f"  {len(df):,} rows loaded")
 
         res["q1"] = run("q1 - id1, SUM v1",
             lambda: df.group_by("id1").agg(col("v1").sum()).collect())
@@ -412,21 +411,29 @@ def bench_teide(n, k, seed):
             lambda: df.group_by("id1","id2","id3","id4","id5","id6").agg(
                 col("v3").sum(), col("v1").count()).collect())
 
+    # Each sort in its own context — sort allocates ~2x data, re-read CSV
+    # to avoid swap pressure
+    with Context() as ctx:
+        df = ctx.read_csv(gb)
         res["s1"] = run("sort s1 - id1 ASC",
             lambda: df.sort("id1").collect())
+
+    with Context() as ctx:
+        df = ctx.read_csv(gb)
         res["s6"] = run("sort s6 - 3-key ASC",
             lambda: df.sort("id1", "id2", "id3").collect())
 
+    # Join in its own context
+    with Context() as ctx:
         x = ctx.read_csv(jx)
         y = ctx.read_csv(jy)
         res["j1"] = run("join j1 - inner, 3-key",
             lambda: x.join(y, on=["id1", "id2", "id3"]),
             n_iter=N_ITER_JOIN)
-    # Context 1 closed — all H2O.ai data freed
 
     s8, s16 = csv_load_paths(n)
 
-    # Context 2: CSV s8
+    # CSV s8 — own context
     with Context() as ctx:
         for _ in range(N_WARMUP_CSV):
             ctx.read_csv(s8)
@@ -438,7 +445,7 @@ def bench_teide(n, k, seed):
     res["csv_s8"] = median(times)
     print(f"  {'read_csv s8':30s} {fmt(res['csv_s8']):>10s}")
 
-    # Context 3: CSV s16
+    # CSV s16 — own context
     with Context() as ctx:
         for _ in range(N_WARMUP_CSV):
             ctx.read_csv(s16)
@@ -457,9 +464,68 @@ def bench_teide(n, k, seed):
 
 def bench_rayforce(n, k, seed):
     import rayforce as rf
+    from rayforce import Column
+    gb, jx, jy = csv_paths(n, k, seed)
+
     print(f"\n=== RayForce {rf.version} ===")
 
-    col_types = [
+    # Groupby dataset: id1-id3 Symbol, id4-id6 I64, v1-v2 I64, v3 F64
+    gb_types = [rf.Symbol, rf.Symbol, rf.Symbol,
+                rf.I64, rf.I64, rf.I64,
+                rf.I64, rf.I64, rf.F64]
+    df = rf.Table.from_csv(gb_types, gb)
+    print(f"  {len(df):,} rows loaded")
+
+    def run(label, fn, n_iter=N_ITER):
+        for _ in range(N_WARMUP):
+            fn()
+        times = []
+        for _ in range(n_iter):
+            t0 = time.perf_counter()
+            fn()
+            times.append((time.perf_counter() - t0) * 1000)
+        ms = median(times)
+        print(f"  {label:30s} {fmt(ms):>10s}")
+        return ms
+
+    res = {}
+    res["q1"] = run("q1 - id1, SUM v1",
+        lambda: df.select(v1=Column("v1").sum()).by("id1").execute())
+    res["q2"] = run("q2 - id1+id2, SUM v1",
+        lambda: df.select(v1=Column("v1").sum()).by("id1", "id2").execute())
+    res["q3"] = run("q3 - id3, SUM+AVG",
+        lambda: df.select(v1=Column("v1").sum(), v3=Column("v3").mean()).by("id3").execute())
+    res["q5"] = run("q5 - id6, 3xSUM",
+        lambda: df.select(
+            v1=Column("v1").sum(), v2=Column("v2").sum(), v3=Column("v3").sum()
+        ).by("id6").execute())
+    res["q7"] = run("q7 - 6-key, SUM+COUNT",
+        lambda: df.select(
+            v3=Column("v3").sum(), cnt=Column("v1").count()
+        ).by("id1", "id2", "id3", "id4", "id5", "id6").execute())
+
+    res["s1"] = run("sort s1 - id1 ASC",
+        lambda: df.order_by("id1").execute())
+    res["s6"] = run("sort s6 - 3-key ASC",
+        lambda: df.order_by("id1", "id2", "id3").execute())
+
+    # Free groupby table before loading join tables
+    del df
+
+    # Join dataset: id1-id3 I64, id4-id6 Symbol, v1/v2 F64
+    j_types = [rf.I64, rf.I64, rf.I64,
+               rf.Symbol, rf.Symbol, rf.Symbol,
+               rf.F64]
+    x = rf.Table.from_csv(j_types, jx)
+    y = rf.Table.from_csv(j_types, jy)
+    res["j1"] = run("join j1 - inner, 3-key",
+        lambda: x.inner_join(y, on=["id1", "id2", "id3"]).execute(),
+        n_iter=N_ITER_JOIN)
+
+    # Free join tables before CSV load
+    del x, y
+
+    csv_col_types = [
         rf.I64,
         rf.F64,
         rf.Symbol,
@@ -467,15 +533,14 @@ def bench_rayforce(n, k, seed):
         rf.GUID,
     ]
 
-    res = {}
     s8, s16 = csv_load_paths(n)
     for key, path in [("csv_s8", s8), ("csv_s16", s16)]:
         for _ in range(N_WARMUP_CSV):
-            rf.Table.from_csv(col_types, path)
+            rf.Table.from_csv(csv_col_types, path)
         times = []
         for _ in range(N_ITER_CSV):
             t0 = time.perf_counter()
-            rf.Table.from_csv(col_types, path)
+            rf.Table.from_csv(csv_col_types, path)
             times.append((time.perf_counter() - t0) * 1000)
         ms = median(times)
         print(f"  {'read_csv ' + key[4:]:30s} {fmt(ms):>10s}")
@@ -488,6 +553,213 @@ def bench_rayforce(n, k, seed):
 
 ENGINES = {"duckdb": bench_duckdb, "polars": bench_polars, "glaredb": bench_glaredb,
            "teide": bench_teide, "rayforce": bench_rayforce}
+
+
+# ── Per-operation subprocess runner ──
+
+def _run_timed(fn, n_iter, n_warmup):
+    for _ in range(n_warmup):
+        fn()
+    times = []
+    for _ in range(n_iter):
+        t0 = time.perf_counter()
+        fn()
+        times.append((time.perf_counter() - t0) * 1000)
+    return median(times), times
+
+
+def run_single_op(engine, op, n, k, seed):
+    """Run a single operation and return {ms, times, version}."""
+    gb, jx, jy = csv_paths(n, k, seed)
+    s8, s16 = csv_load_paths(n)
+
+    if engine == "duckdb":
+        import duckdb
+        con = duckdb.connect()
+        version = duckdb.__version__
+
+        ops_gb = {
+            "q1": "SELECT id1, SUM(v1) AS v1 FROM df GROUP BY id1",
+            "q2": "SELECT id1, id2, SUM(v1) AS v1 FROM df GROUP BY id1, id2",
+            "q3": "SELECT id3, SUM(v1) AS v1, AVG(v3) AS v3 FROM df GROUP BY id3",
+            "q5": "SELECT id6, SUM(v1) AS v1, SUM(v2) AS v2, SUM(v3) AS v3 FROM df GROUP BY id6",
+            "q7": "SELECT id1,id2,id3,id4,id5,id6, SUM(v3) AS v3, COUNT(*) AS cnt "
+                  "FROM df GROUP BY id1,id2,id3,id4,id5,id6",
+            "s1": "SELECT * FROM df ORDER BY id1",
+            "s6": "SELECT * FROM df ORDER BY id1, id2, id3",
+        }
+        if op in ops_gb:
+            con.execute(f"CREATE TABLE df AS SELECT * FROM read_csv_auto('{gb}')")
+            sql = ops_gb[op]
+            ni = N_ITER_JOIN if op == "j1" else N_ITER
+            ms, times = _run_timed(
+                lambda: con.execute(f"CREATE OR REPLACE TABLE _r AS {sql}"), ni, N_WARMUP)
+            con.close()
+        elif op == "j1":
+            con.execute(f"CREATE TABLE x AS SELECT * FROM read_csv_auto('{jx}')")
+            con.execute(f"CREATE TABLE y AS SELECT * FROM read_csv_auto('{jy}')")
+            sql = ("SELECT x.id1,x.id2,x.id3,x.v1,y.v2 FROM x "
+                   "INNER JOIN y ON x.id1=y.id1 AND x.id2=y.id2 AND x.id3=y.id3")
+            ms, times = _run_timed(
+                lambda: con.execute(f"CREATE OR REPLACE TABLE _r AS {sql}"), N_ITER_JOIN, N_WARMUP)
+            con.close()
+        elif op in ("csv_s8", "csv_s16"):
+            path = s8 if op == "csv_s8" else s16
+            ms, times = _run_timed(
+                lambda: con.execute(f"CREATE OR REPLACE TABLE _csv AS SELECT * FROM read_csv_auto('{path}')"),
+                N_ITER_CSV, N_WARMUP_CSV)
+            con.close()
+        return {"ms": ms, "times": times, "version": version}
+
+    elif engine == "polars":
+        import polars as pl
+        version = pl.__version__
+
+        if op in ("q1", "q2", "q3", "q5", "q7", "s1", "s6"):
+            df = pl.read_csv(gb)
+            fns = {
+                "q1": lambda: df.group_by("id1").agg(pl.col("v1").sum()),
+                "q2": lambda: df.group_by(["id1", "id2"]).agg(pl.col("v1").sum()),
+                "q3": lambda: df.group_by("id3").agg(pl.col("v1").sum(), pl.col("v3").mean()),
+                "q5": lambda: df.group_by("id6").agg(
+                    pl.col("v1").sum(), pl.col("v2").sum(), pl.col("v3").sum()),
+                "q7": lambda: df.group_by(["id1","id2","id3","id4","id5","id6"]).agg(
+                    pl.col("v3").sum(), pl.len()),
+                "s1": lambda: df.sort("id1"),
+                "s6": lambda: df.sort(["id1", "id2", "id3"]),
+            }
+            ni = N_ITER
+            ms, times = _run_timed(fns[op], ni, N_WARMUP)
+        elif op == "j1":
+            x = pl.read_csv(jx)
+            y = pl.read_csv(jy)
+            ms, times = _run_timed(
+                lambda: x.join(y, on=["id1", "id2", "id3"], how="inner"), N_ITER_JOIN, N_WARMUP)
+        elif op in ("csv_s8", "csv_s16"):
+            path = s8 if op == "csv_s8" else s16
+            ms, times = _run_timed(
+                lambda: pl.read_csv(path, try_parse_dates=True), N_ITER_CSV, N_WARMUP_CSV)
+        return {"ms": ms, "times": times, "version": version}
+
+    elif engine == "teide":
+        import teide
+        from teide.api import Context, col
+        version = getattr(teide, "__version__", "dev")
+
+        if op in ("q1", "q2", "q3", "q5", "q7"):
+            with Context() as ctx:
+                df = ctx.read_csv(gb)
+                fns = {
+                    "q1": lambda: df.group_by("id1").agg(col("v1").sum()).collect(),
+                    "q2": lambda: df.group_by("id1", "id2").agg(col("v1").sum()).collect(),
+                    "q3": lambda: df.group_by("id3").agg(col("v1").sum(), col("v3").mean()).collect(),
+                    "q5": lambda: df.group_by("id6").agg(
+                        col("v1").sum(), col("v2").sum(), col("v3").sum()).collect(),
+                    "q7": lambda: df.group_by("id1","id2","id3","id4","id5","id6").agg(
+                        col("v3").sum(), col("v1").count()).collect(),
+                }
+                ms, times = _run_timed(fns[op], N_ITER, N_WARMUP)
+        elif op in ("s1", "s6"):
+            with Context() as ctx:
+                df = ctx.read_csv(gb)
+                fns = {
+                    "s1": lambda: df.sort("id1").collect(),
+                    "s6": lambda: df.sort("id1", "id2", "id3").collect(),
+                }
+                ms, times = _run_timed(fns[op], N_ITER, N_WARMUP)
+        elif op == "j1":
+            with Context() as ctx:
+                x = ctx.read_csv(jx)
+                y = ctx.read_csv(jy)
+                ms, times = _run_timed(
+                    lambda: x.join(y, on=["id1", "id2", "id3"]), N_ITER_JOIN, N_WARMUP)
+        elif op in ("csv_s8", "csv_s16"):
+            path = s8 if op == "csv_s8" else s16
+            with Context() as ctx:
+                ms, times = _run_timed(lambda: ctx.read_csv(path), N_ITER_CSV, N_WARMUP_CSV)
+        return {"ms": ms, "times": times, "version": version}
+
+    elif engine == "rayforce":
+        import rayforce as rf
+        from rayforce import Column
+        version = rf.version
+
+        gb_types = [rf.Symbol, rf.Symbol, rf.Symbol,
+                    rf.I64, rf.I64, rf.I64, rf.I64, rf.I64, rf.F64]
+        j_types = [rf.I64, rf.I64, rf.I64,
+                   rf.Symbol, rf.Symbol, rf.Symbol, rf.F64]
+
+        if op in ("q1", "q2", "q3", "q5", "q7", "s1", "s6"):
+            df = rf.Table.from_csv(gb_types, gb)
+            fns = {
+                "q1": lambda: df.select(v1=Column("v1").sum()).by("id1").execute(),
+                "q2": lambda: df.select(v1=Column("v1").sum()).by("id1", "id2").execute(),
+                "q3": lambda: df.select(v1=Column("v1").sum(), v3=Column("v3").mean()).by("id3").execute(),
+                "q5": lambda: df.select(
+                    v1=Column("v1").sum(), v2=Column("v2").sum(), v3=Column("v3").sum()
+                ).by("id6").execute(),
+                "q7": lambda: df.select(
+                    v3=Column("v3").sum(), cnt=Column("v1").count()
+                ).by("id1", "id2", "id3", "id4", "id5", "id6").execute(),
+                "s1": lambda: df.order_by("id1").execute(),
+                "s6": lambda: df.order_by("id1", "id2", "id3").execute(),
+            }
+            ni = N_ITER
+            ms, times = _run_timed(fns[op], ni, N_WARMUP)
+        elif op == "j1":
+            x = rf.Table.from_csv(j_types, jx)
+            y = rf.Table.from_csv(j_types, jy)
+            ms, times = _run_timed(
+                lambda: x.inner_join(y, on=["id1", "id2", "id3"]).execute(), N_ITER_JOIN, N_WARMUP)
+        elif op in ("csv_s8", "csv_s16"):
+            csv_types = [rf.I64, rf.F64, rf.Symbol, rf.Date, rf.Timestamp, rf.Time, rf.GUID]
+            path = s8 if op == "csv_s8" else s16
+            ms, times = _run_timed(
+                lambda: rf.Table.from_csv(csv_types, path), N_ITER_CSV, N_WARMUP_CSV)
+        return {"ms": ms, "times": times, "version": version}
+
+    elif engine == "glaredb":
+        import glaredb
+        con = glaredb.connect()
+        version = "25.6.3"
+
+        ops_gb = {
+            "q1": "SELECT id1, SUM(v1) AS v1 FROM df GROUP BY id1",
+            "q2": "SELECT id1, id2, SUM(v1) AS v1 FROM df GROUP BY id1, id2",
+            "q3": "SELECT id3, SUM(v1) AS v1, AVG(v3) AS v3 FROM df GROUP BY id3",
+            "q5": "SELECT id6, SUM(v1) AS v1, SUM(v2) AS v2, SUM(v3) AS v3 FROM df GROUP BY id6",
+            "q7": "SELECT id1,id2,id3,id4,id5,id6, SUM(v3) AS v3, COUNT(*) AS cnt "
+                  "FROM df GROUP BY id1,id2,id3,id4,id5,id6",
+            "s1": "SELECT * FROM df ORDER BY id1",
+            "s6": "SELECT * FROM df ORDER BY id1, id2, id3",
+        }
+        if op in ops_gb:
+            con.sql(f"CREATE TEMP TABLE df AS SELECT * FROM read_csv('{gb}')")
+            sql = ops_gb[op]
+            def grun():
+                con.sql("DROP TABLE IF EXISTS _r")
+                con.sql(f"CREATE TEMP TABLE _r AS {sql}")
+            ni = N_ITER
+            ms, times = _run_timed(grun, ni, N_WARMUP)
+            con.close()
+        elif op == "j1":
+            con.sql(f"CREATE TEMP TABLE x AS SELECT * FROM read_csv('{jx}')")
+            con.sql(f"CREATE TEMP TABLE y AS SELECT * FROM read_csv('{jy}')")
+            sql = ("SELECT x.id1,x.id2,x.id3,x.v1,y.v2 FROM x "
+                   "INNER JOIN y ON x.id1=y.id1 AND x.id2=y.id2 AND x.id3=y.id3")
+            def grun():
+                con.sql("DROP TABLE IF EXISTS _r")
+                con.sql(f"CREATE TEMP TABLE _r AS {sql}")
+            ms, times = _run_timed(grun, N_ITER_JOIN, N_WARMUP)
+            con.close()
+        elif op in ("csv_s8", "csv_s16"):
+            path = s8 if op == "csv_s8" else s16
+            def grun():
+                con.sql("DROP TABLE IF EXISTS _csv")
+                con.sql(f"CREATE TEMP TABLE _csv AS SELECT * FROM read_csv('{path}')")
+            ms, times = _run_timed(grun, N_ITER_CSV, N_WARMUP_CSV)
+            con.close()
+        return {"ms": ms, "times": times, "version": version}
 
 QUERIES = [
     ("q1 - id1, SUM v1", "q1"),
@@ -510,8 +782,17 @@ if __name__ == "__main__":
     ap.add_argument("--seed", "-s", type=int, default=0, help="Dataset seed (default: 0)")
     ap.add_argument("--engines", "-e", default="duckdb,polars,glaredb,teide,rayforce",
                     help="Comma-separated engines (default: duckdb,polars,glaredb,teide,rayforce)")
-    # Internal: single-engine subprocess mode
+    ap.add_argument("--rayforce-dir", default=None,
+                    help="Build rayforce from this directory")
+    ap.add_argument("--rayforce-branch", default=None,
+                    help="Clone and build rayforce from this git branch")
+    ap.add_argument("--teide-dir", default=None,
+                    help="Build teide from this directory")
+    ap.add_argument("--teide-branch", default=None,
+                    help="Clone and build teide from this git branch")
+    # Internal: single-operation subprocess mode
     ap.add_argument("--_engine", help=argparse.SUPPRESS)
+    ap.add_argument("--_op", help=argparse.SUPPRESS)
     ap.add_argument("--_result", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
@@ -520,15 +801,36 @@ if __name__ == "__main__":
     k = args.k
     seed = args.seed
 
-    # ── Subprocess mode: run one engine, write JSON result, exit ──
-    if args._engine:
-        data = ENGINES[args._engine](n, k, seed)
+    # ── Subprocess mode: run one operation for one engine ──
+    if args._engine and args._op:
+        data = run_single_op(args._engine, args._op, n, k, seed)
         with open(args._result, "w") as f:
             json.dump(data, f)
-        sys.exit(0)
+        os._exit(0)
 
     # ── Orchestrator mode ──
+    from engine_utils import build_engine, engine_label, resolve_source
+
     engines = [e.strip() for e in args.engines.split(",")]
+
+    # Source directories for engines (--dir takes precedence over --branch)
+    src_dirs = {}
+    for eng, d, b in [("rayforce", args.rayforce_dir, args.rayforce_branch),
+                       ("teide", args.teide_dir, args.teide_branch)]:
+        resolved = resolve_source(eng, d, b)
+        if resolved:
+            src_dirs[eng] = resolved
+
+    # Build engines from custom directories
+    for eng, src in src_dirs.items():
+        if eng in engines:
+            print(f"Building {eng} from {src}...")
+            build_engine(eng, src)
+
+    # Compute engine labels
+    engine_labels = {}
+    for eng in engines:
+        engine_labels[eng] = engine_label(eng, src_dirs.get(eng))
 
     # Check H2O.ai datasets exist
     gb, jx, jy = csv_paths(n, k, seed)
@@ -547,50 +849,126 @@ if __name__ == "__main__":
         "cpu": platform.processor(), "os": platform.platform(),
     }
 
+    ops = [key for _, key in QUERIES]
+
     for name in engines:
         if name not in ENGINES:
             print(f"Unknown engine: {name}")
             continue
 
-        fd, result_path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        try:
-            proc = subprocess.run(
-                [sys.executable, os.path.abspath(__file__),
-                 "--rows", args.rows, "--k", str(k), "--seed", str(seed),
-                 "--_engine", name, "--_result", result_path],
-            )
-            if proc.returncode != 0:
-                print(f"  [{name}] subprocess exited with code {proc.returncode}")
-                continue
-            with open(result_path) as f:
-                all_results[name] = json.load(f)
-        except ImportError:
-            print(f"\n[skip] {name} not installed")
-        finally:
-            if os.path.exists(result_path):
-                os.unlink(result_path)
+        label_name = engine_labels.get(name, name)
+        print(f"\n=== {label_name} ===")
+        res = {}
+        version = ""
+
+        for op in ops:
+            fd, result_path = tempfile.mkstemp(suffix=".json")
+            os.close(fd)
+            try:
+                proc = subprocess.run(
+                    [sys.executable, os.path.abspath(__file__),
+                     "--rows", args.rows, "--k", str(k), "--seed", str(seed),
+                     "--_engine", name, "--_op", op, "--_result", result_path],
+                    timeout=600,
+                )
+                if proc.returncode != 0:
+                    print(f"  {op:30s} ERROR (exit {proc.returncode})")
+                    continue
+                with open(result_path) as f:
+                    data = json.load(f)
+                ms = data["ms"]
+                version = data.get("version", version)
+                res[op] = ms
+                qlabel = next((l for l, k in QUERIES if k == op), op)
+                print(f"  {qlabel:30s} {fmt(ms):>10s}")
+            except subprocess.TimeoutExpired:
+                print(f"  {op:30s} TIMEOUT")
+            except Exception as e:
+                print(f"  {op:30s} ERROR ({e})")
+            finally:
+                if os.path.exists(result_path):
+                    os.unlink(result_path)
+
+        all_results[name] = {"results": res, "version": version}
 
     # Summary
     print(f"\n{'='*80}")
     print(f"SUMMARY - H2O.ai {n:,} rows")
     print(f"{'='*80}")
 
+    col_w = max(10, max(len(engine_labels.get(e, e)) for e in engines) + 2)
     header = f"  {'Query':<30s}"
     for name in engines:
-        header += f" {name:>10s}"
+        header += f" {engine_labels.get(name, name):>{col_w}s}"
     print(f"\n{header}")
-    print(f"  {'-'*30}" + f" {'-'*10}" * len(engines))
+    print(f"  {'-'*30}" + f" {'-'*col_w}" * len(engines))
 
     for label, key in QUERIES:
         line = f"  {label:<30s}"
         for name in engines:
             r = all_results.get(name, {}).get("results", {})
             ms = r.get(key)
-            line += f" {fmt(ms) if ms else 'N/A':>10s}"
+            line += f" {fmt(ms) if ms else 'N/A':>{col_w}s}"
         print(line)
 
-    out = os.path.join(SCRIPT_DIR, "results.json")
+    results_dir = os.path.join(SCRIPT_DIR, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    out = os.path.join(results_dir, "bench_results.json")
     with open(out, "w") as f:
         json.dump(all_results, f, indent=2)
     print(f"\nResults saved to {out}")
+
+    # ── Generate histogram HTML ──
+    engine_colors = {
+        "duckdb": "#1f77b4", "polars": "#2ca02c", "glaredb": "#9467bd",
+        "teide": "#d62728", "rayforce": "#ff7f0e",
+    }
+    bar_data = {}
+    for name in engines:
+        lbl = engine_labels.get(name, name)
+        r = all_results.get(name, {}).get("results", {})
+        if r:
+            bar_data[lbl] = {key: r.get(key) for _, key in QUERIES}
+
+    if bar_data:
+        queries_json = json.dumps([label for label, _ in QUERIES])
+        engines_json = json.dumps(list(bar_data.keys()))
+        values_json = json.dumps({eng: [vals.get(key) for _, key in QUERIES]
+                                  for eng, vals in bar_data.items()})
+        colors_list = [engine_colors.get(e, "#333") for e in engines]
+        colors_json = json.dumps(colors_list)
+
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>H2O Benchmark</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script></head>
+<body style="font-family:sans-serif;padding:20px">
+<h2>H2O.ai Benchmark — {n:,} rows</h2>
+<div id="chart"></div>
+<script>
+const queries = {queries_json};
+const engines = {engines_json};
+const values = {values_json};
+const colors = {colors_json};
+const traces = engines.map((eng, i) => ({{
+  x: queries,
+  y: values[eng],
+  name: eng,
+  type: 'bar',
+  marker: {{ color: colors[i] }},
+  text: values[eng].map(v => v ? (v >= 1000 ? (v/1000).toFixed(2)+'s' : v.toFixed(1)+'ms') : ''),
+  textposition: 'outside',
+  textfont: {{ size: 9 }},
+}}));
+Plotly.newPlot('chart', traces, {{
+  barmode: 'group',
+  height: 500,
+  yaxis: {{ title: 'Time (ms)', type: 'log' }},
+  template: 'plotly_white',
+  legend: {{ orientation: 'h', y: 1.1 }},
+}});
+</script></body></html>"""
+
+        html_path = os.path.join(results_dir, "bench.html")
+        with open(html_path, "w") as f:
+            f.write(html)
+        print(f"Histogram saved to {html_path}")
