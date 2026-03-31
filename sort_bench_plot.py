@@ -1,12 +1,55 @@
 #!/usr/bin/env python3
-"""Interactive sort benchmark visualization with filter controls."""
+"""Interactive sort benchmark visualization with filter controls.
 
+Usage:
+  python sort_bench_plot.py                     # generate plot
+  python sort_bench_plot.py --list              # list all engines in results
+  python sort_bench_plot.py --remove "engine"   # remove engine from results
+"""
+
+import argparse
 import json
 import os
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
+
+
+def list_engines():
+    results_path = os.path.join(RESULTS_DIR, "sort_results.json")
+    if not os.path.exists(results_path):
+        print("No results found.")
+        return
+    with open(results_path) as f:
+        data = json.load(f)
+    engines = {}
+    for r in data["results"]:
+        eng = r["engine"]
+        engines[eng] = engines.get(eng, 0) + 1
+    print("Engines in results:")
+    for eng, count in sorted(engines.items()):
+        print(f"  {eng:40s} ({count} measurements)")
+
+
+def remove_engine(name):
+    results_path = os.path.join(RESULTS_DIR, "sort_results.json")
+    if not os.path.exists(results_path):
+        print("No results found.")
+        return
+    with open(results_path) as f:
+        data = json.load(f)
+    before = len(data["results"])
+    data["results"] = [r for r in data["results"] if r["engine"] != name]
+    after = len(data["results"])
+    removed = before - after
+    if removed == 0:
+        print(f"Engine '{name}' not found in results.")
+        list_engines()
+        return
+    with open(results_path, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"Removed {removed} measurements for '{name}'. {after} remaining.")
 
 
 def main():
@@ -281,4 +324,14 @@ redraw();
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description="Sort benchmark plot")
+    ap.add_argument("--list", action="store_true", help="List engines in results")
+    ap.add_argument("--remove", metavar="ENGINE", help="Remove engine from results")
+    args = ap.parse_args()
+
+    if args.list:
+        list_engines()
+    elif args.remove:
+        remove_engine(args.remove)
+    else:
+        main()

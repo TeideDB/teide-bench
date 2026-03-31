@@ -14,9 +14,10 @@ ENGINE_REPOS = {
 
 
 def git_info(directory):
-    """Get branch and short commit from a directory."""
+    """Get branch, short commit, and dirty flag from a directory."""
     branch = ""
     commit = ""
+    dirty = False
     try:
         branch = subprocess.check_output(
             ["git", "-C", directory, "branch", "--show-current"],
@@ -29,7 +30,14 @@ def git_info(directory):
             stderr=subprocess.DEVNULL).decode().strip()[:12]
     except Exception:
         pass
-    return branch, commit
+    try:
+        status = subprocess.check_output(
+            ["git", "-C", directory, "status", "--porcelain"],
+            stderr=subprocess.DEVNULL).decode().strip()
+        dirty = len(status) > 0
+    except Exception:
+        pass
+    return branch, commit, dirty
 
 
 def resolve_source(engine, src_dir=None, branch=None):
@@ -86,13 +94,15 @@ def build_engine(engine, src_dir):
 
 
 def engine_label(engine, src_dir):
-    """Create label like 'rayforce@sort (abc123)'."""
+    """Create label like 'rayforce@sort (abc123) dirty'."""
     if not src_dir:
         return engine
-    branch, commit = git_info(src_dir)
+    branch, commit, dirty = git_info(src_dir)
     parts = [engine]
     if branch:
         parts[0] += f"@{branch}"
     if commit:
         parts.append(f"({commit})")
+    if dirty:
+        parts.append("dirty")
     return " ".join(parts)
